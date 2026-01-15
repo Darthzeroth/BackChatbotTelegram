@@ -1,0 +1,264 @@
+import pandas as pd
+import datetime
+from google.cloud import bigquery
+from google.colab import auth
+import datetime
+import pytz
+auth.authenticate_user()
+
+client = bigquery.Client(project='pd-casual-dama')
+tz = pytz.timezone("America/Mexico_City")
+version = datetime.datetime.now(tz).strftime('%Y%m%d')
+
+query = f"""
+CREATE OR REPLACE TABLE `pd-casual-dama.transform_pd_casual_dama.tbl_universo_inicial_proy` AS
+SELECT A.* ,B.latitud,B.Longitud
+FROM(
+SELECT *EXCEPT(UnidadesSem1,UnidadesSem2,UnidadesSem3,UnidadesSem4,Promocion,Tipo,CP_Sucursal,UnidadNegocio),
+        CAST(IFNULL(UnidadesSem1,0) AS INT64) AS UnidadesSem1,
+        CAST(IFNULL(UnidadesSem2,0) AS INT64) AS UnidadesSem2,
+        CAST(IFNULL(UnidadesSem3,0) AS INT64) AS UnidadesSem3,
+        CAST(IFNULL(UnidadesSem4,0) AS INT64) AS UnidadesSem4,
+        CASE WHEN Promocion = '' THEN 'NO APLICA'
+             ELSE TRIM(Promocion) END AS Promocion,
+        CASE WHEN Tipo = '' THEN 'NORMAL'
+             ELSE TRIM(Tipo) END AS Tipo,
+        CASE WHEN LENGTH(CAST(CP_Sucursal AS STRING)) = 4 THEN CONCAT('0',CP_Sucursal)
+             ELSE CONCAT(CP_Sucursal) END AS CP_Sucursal,
+        CASE WHEN UnidadNegocio IN('ISLAS','TM') THEN 'CATALOGO'
+             ELSE UnidadNegocio END AS UnidadNegocio
+FROM(
+
+SELECT A.*,NO_CLUSTER
+FROM `pd-casual-dama.load_pd_casual_dama.tbl_demanda`
+AS A ### 10,336,637
+LEFT JOIN(
+SELECT DISTINCT Llave,Talla,NO_CLUSTER
+FROM `pd-casual-dama.dev_pd_casual_dama.tbl_clusterizacion_{version}` ##### cambiar
+)  AS B ON A.Llave = B.Llave AND A.Talla = B.Talla
+)
+) AS A
+LEFT JOIN(
+SELECT *
+FROM `pd-casual-dama.load_pd_casual_dama.cat_codigos_postales_mexico`
+) AS B ON CAST(A.CP_Sucursal AS STRING) = CAST(B.codigo_postal AS STRING)
+ORDER BY ANIO,SEMANA
+
+"""
+
+client.query(query).result()
+
+#Comando para comentar/ descomentar    "ctrl + shift 7"
+# model_name = f"pd-casual-dama.transform_pd_casual_dama.modelo_xgboost"
+# query = f"""
+# CREATE OR REPLACE MODEL `{model_name}`
+# OPTIONS(
+#     MODEL_TYPE = 'BOOSTED_TREE_REGRESSOR',
+#     INPUT_LABEL_COLS = ['Unidades'],  -- Variable objetivo
+#     NUM_PARALLEL_TREE = 10, -- Número de árboles en el bosque
+#     TREE_METHOD = 'AUTO',
+#     EARLY_STOP = TRUE
+# )
+# AS
+# SELECT
+#     -- Variables numéricas
+#     CAST(Anio AS INT64) AS Anio,
+#     CAST(Semana AS INT64) AS Semana,
+#     importe,
+
+#     -- Variables categóricas que serán codificadas automáticamente
+#     UnidadNegocio, Llave, Marca, Talla, Color,
+#     Promocion, Tipo, NO_CLUSTER,
+#     -- Variable objetivo
+#     Unidades
+# FROM `pd-casual-dama.transform_pd_casual_dama.tbl_universo_inicial_proy`;
+
+# """
+# client.query(query).result()
+
+
+query = f"""
+CREATE OR REPLACE TABLE `pd-casual-dama.transform_pd_casual_dama.tbl_universo_inicial_proy_arima` AS
+SELECT
+    Llave,
+    Talla,
+    UnidadNegocio,
+    PARSE_DATE('%Y-%W', CONCAT(CAST(Anio AS STRING), '-', CAST(Semana AS STRING))) AS fecha,
+    Unidades
+FROM(
+SELECT *EXCEPT(Semana,UnidadNegocio),
+        CASE WHEN Semana = 53 THEN 52
+             ELSE Semana END AS Semana,
+        CASE WHEN UnidadNegocio IN('ISLAS','TM') THEN 'CATALOGO'
+             ELSE UnidadNegocio END AS UnidadNegocio
+FROM `pd-casual-dama.transform_pd_casual_dama.tbl_universo_inicial_proy`
+WHERE Unidades IS NOT NULL
+);
+
+"""
+client.query(query).result()
+
+# """
+# model_name = f"pd-casual-dama.transform_pd_casual_dama.modelo_forecast"
+# query = f"""
+# CREATE OR REPLACE MODEL `{model_name}`
+# OPTIONS(
+#     MODEL_TYPE = 'ARIMA_PLUS',
+#     TIME_SERIES_TIMESTAMP_COL = 'fecha',
+#     TIME_SERIES_DATA_COL = 'Unidades',
+#     TIME_SERIES_ID_COL = ['Llave', 'Talla','UnidadNegocio'],
+#     HOLIDAY_REGION = 'MX',
+#     AUTO_ARIMA = TRUE
+# )
+# AS
+# SELECT * FROM `pd-casual-dama.transform_pd_casual_dama.tbl_universo_inicial_proy_arima` ;
+
+# """
+# client.query(query).result()
+# """
+
+query = f"""
+CREATE OR REPLACE TABLE `pd-casual-dama.transform_pd_casual_dama.modelo_forecast_arima_resultados` AS
+WITH inventario AS (
+    SELECT Item AS Llave, VariantCode AS Talla, UnidadNegocio
+    FROM `pd-casual-dama.load_pd_casual_dama.tbl_inventario`
+)
+SELECT
+    i.Llave,
+    i.Talla,
+    i.UnidadNegocio,
+    f.forecast_timestamp AS fecha_predicha,
+    f.forecast_value AS unidades_predichas,
+    f.prediction_interval_lower_bound AS intervalo_inferior,
+    f.prediction_interval_upper_bound AS intervalo_superior
+FROM ML.FORECAST(MODEL `pd-casual-dama.transform_pd_casual_dama.modelo_forecast`, STRUCT(52 AS horizon, 0.9 AS confidence_level)) f
+JOIN inventario i
+    ON i.Llave = f.Llave
+    AND i.Talla = f.Talla
+    AND i.UnidadNegocio = f.UnidadNegocio
+ORDER BY f.forecast_timestamp;
+"""
+client.query(query).result()
+
+
+query = f"""
+WITH rangos AS (
+  SELECT
+    CAST(FORMAT_DATE('%Y%W', CURRENT_DATE()) AS INT64) AS semana_inicio,
+    CAST(FORMAT_DATE('%Y%W', DATE_ADD(CURRENT_DATE(), INTERVAL 52 WEEK)) AS INT64) AS semana_fin
+)
+
+SELECT
+  CAST(LEFT(CAST(AnioSemana AS STRING),4) AS INT64) AS Anio,
+  CAST(RIGHT(CAST(AnioSemana AS STRING),2) AS INT64) AS Semana,
+  Importe,
+  UnidadNegocio,
+  Llave,
+  Marca,
+  Talla,
+  Color,
+  'NO APLICA' AS Promocion,
+  'NORMAL' AS Tipo,
+  NO_cluster
+FROM (
+  SELECT
+    A.*,
+    B.CENTROID_ID AS NO_cluster,
+    C.prom_venta AS Importe,
+    C.Color,
+    C.Marca
+  FROM (
+    SELECT
+      *,
+      CAST(FORMAT_TIMESTAMP('%Y%W', fecha_predicha) AS INT64) AS AnioSemana,
+      CURRENT_DATE() AS fecha_ejecucion
+    FROM
+      `pd-casual-dama.transform_pd_casual_dama.modelo_forecast_arima_resultados`
+    WHERE
+      DATE(fecha_predicha) BETWEEN
+        DATE_ADD(CURRENT_DATE(), INTERVAL 1 WEEK)  -- inicio dinámico +1 semana
+        AND DATE_ADD(CURRENT_DATE(), INTERVAL 1 YEAR)
+  ) AS A
+  LEFT JOIN
+    `pd-casual-dama.transform_pd_casual_dama.cat_clusterizacion_resultado` B
+    ON A.Llave = B.Llave AND A.Talla = B.Talla
+  LEFT JOIN (
+      SELECT *, ((precio_tienda+precio_catalogo)/2) AS prom_venta
+      FROM `pd-casual-dama.load_pd_casual_dama.tbl_clusterizacion`
+  ) AS C
+    ON A.Llave = C.Llave AND A.Talla = C.Talla
+)
+ORDER BY AnioSemana
+"""
+client.query(query).result()
+
+query = f"""
+CREATE OR REPLACE TABLE `pd-casual-dama.transform_pd_casual_dama.modelo_xgboost_resultados_2` AS
+SELECT *
+FROM ML.PREDICT(MODEL `pd-casual-dama.transform_pd_casual_dama.modelo_xgboost`,
+                (SELECT * FROM `pd-casual-dama.transform_pd_casual_dama.inventario_predecir_XGB_2`))
+"""
+client.query(query).result()
+
+query = f"""
+CREATE OR REPLACE TABLE `pd-casual-dama.dev_pd_casual_dama.demanda_predicha_{version}` AS (
+SELECT A.*,B.intervalo_inferior,B.intervalo_superior
+FROM(
+SELECT CURRENT_DATE() AS fecha_ejecucion,{version} AS version,NO_CLUSTER,UnidadNegocio,Llave,Talla,Marca,ANIO,SEMANA,SUM(demanda_predicha) AS demanda_predicha
+FROM(
+
+SELECT *,
+       CASE WHEN predicted_Unidades < 0 THEN -1
+            WHEN predicted_Unidades >= 0 AND predicted_Unidades < 0.99 THEN 0
+            ELSE FLOOR(predicted_Unidades)
+            END AS demanda_predicha
+FROM `pd-casual-dama.transform_pd_casual_dama.modelo_xgboost_resultados_2`
+WHERE
+  SAFE_CAST(CONCAT(CAST(ANIO AS STRING),
+                   LPAD(CAST(SEMANA AS STRING), 2, '0')) AS INT64)
+  BETWEEN
+    SAFE_CAST(FORMAT_DATE('%Y%W', DATE_ADD(CURRENT_DATE(), INTERVAL 1 WEEK)) AS INT64)
+    AND
+    SAFE_CAST(FORMAT_DATE('%Y%W', DATE_ADD(CURRENT_DATE(), INTERVAL 1 YEAR)) AS INT64)
+
+)
+ GROUP BY 1,2,3,4,5,6,7,8,9
+ HAVING demanda_predicha > 0
+ ORDER BY ANIO,SEMANA
+) AS A ####-277940
+LEFT JOIN(
+
+SELECT A.*,B.CENTROID_ID AS NO_cluster,CAST(LEFT(CAST(A.AnioSemana AS STRING),4) AS INT64) AS ANIO, CAST(RIGHT(CAST(A.AnioSemana AS STRING),2) AS INT64) AS SEMANA
+FROM(
+SELECT *
+FROM(
+SELECT *,CAST(FORMAT_TIMESTAMP('%Y%W', fecha_predicha) AS INT64) AS AnioSemana,
+         CURRENT_DATE() AS fecha_ejecucion
+FROM `pd-casual-dama.transform_pd_casual_dama.modelo_forecast_arima_resultados`
+) WHERE DATE(fecha_predicha)
+      BETWEEN DATE_ADD(CURRENT_DATE(), INTERVAL 1 WEEK)
+          AND DATE_ADD(CURRENT_DATE(), INTERVAL 1 YEAR)
+ ORDER BY AnioSemana ###512,389
+) AS A
+LEFT JOIN(
+SELECT *
+FROM `pd-casual-dama.transform_pd_casual_dama.cat_clusterizacion_resultado`
+) AS B ON A.Llave = B.Llave AND A.Talla = B.Talla
+
+) AS B ON A.Llave = B.Llave AND A.Talla = B.Talla AND A.UnidadNegocio = B.UnidadNegocio AND A.ANIO = B.ANIO AND A.SEMANA = B.SEMANA
+)
+
+"""
+client.query(query).result()
+
+download_query = f"""
+    SELECT * FROM `pd-casual-dama.dev_pd_casual_dama.demanda_predicha_{version}`
+"""
+
+df = client.query(download_query).to_dataframe()
+
+csv_filename = f'demanda_predicha_{version}.csv'
+df.to_csv(csv_filename, index=False)
+
+from google.colab import files
+files.download(csv_filename)

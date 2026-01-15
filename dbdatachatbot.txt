@@ -1,0 +1,3 @@
+Id	NombreCompleto	NumeroCliente	NumeroTarjeta	EstatusTarjeta	SaldoActual	Disponible	PagoMinimo	EstatusSolicitud	Telefono	ChatId
+1	DANIEL FUENTES DIAZ	90	OR0369006	Tarjeta Vencida	7974.78	2025.22	3987.28	Rechazado	2211664671	NULL
+2	DOLORES TORRES MATA	17217	PK0521721701	Activa	0.00	2400.00	0.00	Autorizado	2211664671	NULL
