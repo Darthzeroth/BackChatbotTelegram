@@ -147,19 +147,22 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # --- Opciones Públicas ---
     if any(x in text for x in ['1️⃣', 'beneficios']):
         log_evento(user, "Consulta Beneficios")
-        await update.message.reply_text('📌 Beneficios:\n- Aumenta tus ventas\n- Ahorras tiempo')
+        await update.message.reply_text('📌 Beneficios: \n- Aumenta tus ventas\n- Ahorras tiempo\n- Historial crediticio sano\n\n')
         return MENU
     elif any(x in text for x in ['2️⃣', 'documentos']):
         log_evento(user, "Consulta Documentos")
-        await update.message.reply_text('📋 Requisitos:\n- INE\n- Comp. Domicilio\n- 4 referencias')
+        await update.message.reply_text('📋 Requisitos:\n- Mayor de edad\n- Socio PAKAR\n- Identificación oficial\n- Comprobante de domicilio\n- 4 referencias personales')
+        await update.message.reply_photo(
+        photo=open('requisitos.jpg', 'rb')
+        )
         return MENU
     elif any(x in text for x in ['3️⃣', 'pagos']):
         log_evento(user, "Consulta Pagos")
-        await update.message.reply_text('💳 Cuenta BBVA: XXXX-XXXX-XXXX.')
+        await update.message.reply_text('💳 Puedes realizar tus pagos a la cuenta: XXXX-XXXX-XXXX en BBVA. Enviar comprobante al WhatsApp 2228500632.')
         return MENU
     elif any(x in text for x in ['4️⃣', 'asesor']):
         log_evento(user, "Solicita Asesor")
-        await update.message.reply_text('👨🏽‍💻 Un asesor te contactará pronto.')
+        await update.message.reply_text('👨🏽‍💻 Un asesor se pondrá en contacto contigo muy pronto.')
         return MENU
     
     # --- Opciones Privadas ---
@@ -290,7 +293,7 @@ async def enviar_codigo_verificacion(update: Update, context: ContextTypes.DEFAU
     context.user_data['intentos'] = 0
     
     log_evento(update.effective_user, f"Enviando SMS con el codigo {codigo} a terminación {telefono_final[-4:]}")
-    
+    #telefono_final = f"522226757385"
     #resultado = sms_client.enviar_sms(telefono_final, f"Tu codigo RM es: {codigo}")
     resultado = {}
     resultado['status'] = 0
@@ -337,6 +340,11 @@ async def ejecutar_operacion_final(update, context):
     elif mop == 6:
         log_evento(user, "Vio Edo Cuenta")
         await mostrar_estado_cuenta(update, context)
+        await update.message.reply_document(
+           document=open('estadocuenta.pdf', 'rb'),
+           filename='estadocuenta.pdf',
+           caption='📄 ¡Aquí tienes tu estado de cuenta!' 
+        )
     elif mop == 7:
         log_evento(user, "Solicitó Incremento")
         await update.message.reply_text(f"👨🏽‍💻 {nombre_final}, solicitud enviada.")
